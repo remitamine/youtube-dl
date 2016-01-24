@@ -2,6 +2,7 @@
 from __future__ import unicode_literals
 
 import re
+import random
 
 from .common import InfoExtractor
 from ..compat import compat_str
@@ -10,6 +11,7 @@ from ..utils import (
     unescapeHTML,
     ExtractorError,
     xpath_text,
+    sanitized_Request
 )
 
 
@@ -43,12 +45,28 @@ class BiliBiliIE(InfoExtractor):
     }]
 
     def _real_extract(self, url):
+
+        def random_ip(kind=1):
+            base_ip = "220.181.111.%d" if kind != 2 else "59.152.193.%d"
+            return base_ip % random.randint(2,254)
+
+        def request_builder(url, fake_ip=False):
+            if fake_ip:
+                fake_ip = random_ip()
+                headers = {
+                    'X-Forwarded-For': fake_ip,
+                    'Client-IP': fake_ip
+                }
+                return sanitized_Request(url, headers=headers)
+            return sanitized_Request(url)
+
         mobj = re.match(self._VALID_URL, url)
         video_id = mobj.group('id')
         page_num = mobj.group('page_num') or '1'
 
+
         view_data = self._download_json(
-            'http://api.bilibili.com/view?type=json&appkey=8e9fc618fbd41e28&id=%s&page=%s' % (video_id, page_num),
+            request_builder('http://api.bilibili.com/view?type=json&appkey=8e9fc618fbd41e28&id=%s&page=%s' % (video_id, page_num)),
             video_id)
         if 'error' in view_data:
             raise ExtractorError('%s said: %s' % (self.IE_NAME, view_data['error']), expected=True)
@@ -57,13 +75,21 @@ class BiliBiliIE(InfoExtractor):
         title = unescapeHTML(view_data['title'])
 
         doc = self._download_xml(
-            'http://interface.bilibili.com/v_cdn_play?appkey=8e9fc618fbd41e28&cid=%s' % cid,
+            request_builder('http://interface.bilibili.com/v_cdn_play?appkey=8e9fc618fbd41e28&cid=%s' % cid),
             cid,
             'Downloading page %s/%s' % (page_num, view_data['pages'])
         )
 
         if xpath_text(doc, './result') == 'error':
-            raise ExtractorError('%s said: %s' % (self.IE_NAME, xpath_text(doc, './message')), expected=True)
+            # Let's fake_ip now
+            doc = self._download_xml(
+                request_builder('http://interface.bilibili.com/v_cdn_play?appkey=8e9fc618fbd41e28&cid=%s' % cid, fake_ip=True),
+                cid,
+                'Downloading page %s/%s with faked IP' % (page_num, view_data['pages'])
+            )
+            # If failed again
+            if xpath_text(doc, './result') == 'error':
+                raise ExtractorError('%s said: %s' % (self.IE_NAME, xpath_text(doc, './message')), expected=True)
 
         entries = []
 
